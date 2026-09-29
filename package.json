@@ -1,0 +1,12 @@
+{
+  "name": "cs-udp-bot",
+  "version": "1.0.0",
+  "description": "Bot odpytujacy UDP dla SeoHost",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "gamedig": "^5.0.0-rc.1"
+  }
+}
