@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/odswiez",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}
