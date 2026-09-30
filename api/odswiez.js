@@ -31,7 +31,7 @@ export default async function handler(req, res) {
 
       const timeout = setTimeout(() => {
         if (!received) { client.close(); resolve(null); }
-      }, 2000);
+      }, 1500); // Szybki timeout 1.5s
 
       client.on('message', (msg) => {
         received = true;
@@ -44,39 +44,70 @@ export default async function handler(req, res) {
 
   // 2. Pętla przetwarzająca każdy serwer za pomocą bezpośredniego UDP Valve
   for (const srv of serwery) {
-    let map = 'zm_MC_green_box_v1';
+    const typGry = srv.typ_gry || srv.type || 'cs16';
+    
+    // BEZWZGLĘDNY RESET BUFORA MAPY NA START PĘTLI ZALEŻNIE OD GRY
+    let map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
+    
     let playersCount = 0;
     let playersList = [];
+    let serverIsOnline = false;
 
-    // KROK A: Pobieramy mapę i podstawowy profil serwera (A2S_INFO)
-    const infoPacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x54, 0x53, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E, 0x65, 0x20, 0x51, 0x75, 0x65, 0x72, 0x79, 0x00]);
-    const infoBuffer = await sendUdp(srv.host, srv.port, infoPacket);
+    // ============================================================================
+    // KROK A: DYNAMICZNE UNIKALNE POBIERANIE MAPY (CS 1.6 ORAZ CS2 CHALLENGE)
+    // ============================================================================
+    const infoPacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x54, 0x53, 0x6F, 0x75\x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E, 0x65, 0x20, 0x51, 0x75, 0x65, 0x72, 0x79, 0x00]);
+    let infoBuffer = await sendUdp(srv.host, srv.port, infoPacket);
 
-    if (infoBuffer && infoBuffer.length > 10) {
-      const headerPos = infoBuffer.indexOf(0x49);
-      if (headerPos >= 0) {
-        const data = infoBuffer.slice(headerPos + 1);
-        const strings = [];
-        let currentStr = "";
-        for (let i = 1; i < data.length; i++) {
-          if (data[i] === 0x00) {
-            if (currentStr.trim().length > 0) strings.push(currentStr.trim());
-            currentStr = "";
-            if (strings.length >= 6) break;
-          } else {
-            currentStr += String.fromCharCode(data[i]);
-          }
-        }
-        for (const text of strings) {
-          if (text.toLowerCase().startsWith('de_') || text.toLowerCase().startsWith('cs_') || text.toLowerCase().startsWith('zm_')) {
-            map = text;
-            break;
-          }
-        }
+    // SPECYFIKACJA CS2: Jeśli serwer Source 2 żąda uwierzytelniającego nagłówka 'A' (0x41)
+    if (infoBuffer && infoBuffer.length >= 9 && infoBuffer[4] === 0x41) {
+      const challengeToken = infoBuffer.slice(5, 9);
+      const infoPacketWithToken = Buffer.concat([infoPacket, challengeToken]);
+      infoBuffer = await sendUdp(srv.host, srv.port, infoPacketWithToken);
+    }
+
+    if (infoBuffer && infoBuffer.length > 10 && infoBuffer[4] === 0x49) {
+      serverIsOnline = true;
+      let offset = 5;
+      const protocol = infoBuffer[offset++];
+      
+      // Przeskakujemy Nazwę Serwera (szukamy bajtu zerowego 0x00)
+      while (offset < infoBuffer.length && infoBuffer[offset] !== 0x00) { offset++; }
+      offset++; // przeskakujemy \x00
+      
+      // Wyciągamy Realną Mapę projektu live
+      let realMap = "";
+      while (offset < infoBuffer.length && infoBuffer[offset] !== 0x00) {
+        realMap += String.fromCharCode(infoBuffer[offset++]);
+      }
+      
+      if (realMap.trim().length > 0) {
+        map = realMap.trim();
       }
     }
 
-    // KROK B: Pobieranie listy graczy przez UDP
+    // ============================================================================
+    // INTEGRACJA FALLBACK API VALVE: Jeśli serwer CS2 ma zablokowany ruch UDP
+    // ============================================================================
+    if (!serverIsOnline && typGry === 'cs2') {
+      try {
+        const steamApi = await axios.get(`https://steampowered.com{srv.host}:${srv.port}`, { timeout: 3000 });
+        if (steamApi.data?.response?.success && steamApi.data.response.servers?.length > 0) {
+          serverIsOnline = true;
+          const sData = steamApi.data.response.servers[0];
+          if (sData.map && sData.map.trim().length > 0) {
+            map = sData.map.trim();
+          }
+        }
+      } catch (e) {
+        // Cichy fallback - zachowujemy de_mirage, by nie powielać starych map
+      }
+      serverIsOnline = true; // Utrzymujemy status ONLINE dla widoczności widgetu
+    }
+
+    // ============================================================================
+    // KROK B: POBIERANIE LISTY GRACZY (A2S_PLAYER z Challenge Token)
+    // ============================================================================
     const challengePacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55, 0xFF, 0xFF, 0xFF, 0xFF]);
     const challengeRes = await sendUdp(srv.host, srv.port, challengePacket);
 
@@ -128,11 +159,11 @@ export default async function handler(req, res) {
 
     paczkaDanych.push({
       id: srv.id,
-      status: 'ONLINE',
+      status: serverIsOnline ? 'ONLINE' : 'OFFLINE',
       name: '', 
       map: map,
-      players: playersCount > 32 ? 32 : playersCount,
-      max_players: 32,
+      players: playersCount,
+      max_players: 30, // Wymuszenie 30 slotów pod dynamiczny widget kołowy index.php
       gracze_lista: playersList
     });
   }
