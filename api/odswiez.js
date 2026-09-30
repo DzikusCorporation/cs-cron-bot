@@ -31,7 +31,7 @@ export default async function handler(req, res) {
 
       const timeout = setTimeout(() => {
         if (!received) { client.close(); resolve(null); }
-      }, 1500); // Szybki timeout 1.5s
+      }, 1500);
 
       client.on('message', (msg) => {
         received = true;
@@ -56,10 +56,10 @@ export default async function handler(req, res) {
     // ============================================================================
     // KROK A: DYNAMICZNE UNIKALNE POBIERANIE MAPY (CS 1.6 ORAZ CS2 CHALLENGE)
     // ============================================================================
-    const infoPacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x54, 0x53, 0x6F, 0x75\x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E, 0x65, 0x20, 0x51, 0x75, 0x65, 0x72, 0x79, 0x00]);
+    const infoPacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x54, 0x53, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E, 0x65, 0x20, 0x51, 0x75, 0x65, 0x72, 0x79, 0x00]);
     let infoBuffer = await sendUdp(srv.host, srv.port, infoPacket);
 
-    // SPECYFIKACJA CS2: Jeśli serwer Source 2 żąda uwierzytelniającego nagłówka 'A' (0x41)
+    // SPECYFIKACJA CS2: Jeśli serwer Source 2 żąda Challenge (nagłówek 'A' = 0x41)
     if (infoBuffer && infoBuffer.length >= 9 && infoBuffer[4] === 0x41) {
       const challengeToken = infoBuffer.slice(5, 9);
       const infoPacketWithToken = Buffer.concat([infoPacket, challengeToken]);
@@ -69,7 +69,6 @@ export default async function handler(req, res) {
     if (infoBuffer && infoBuffer.length > 10 && infoBuffer[4] === 0x49) {
       serverIsOnline = true;
       let offset = 5;
-      const protocol = infoBuffer[offset++];
       
       // Przeskakujemy Nazwę Serwera (szukamy bajtu zerowego 0x00)
       while (offset < infoBuffer.length && infoBuffer[offset] !== 0x00) { offset++; }
@@ -92,7 +91,7 @@ export default async function handler(req, res) {
     if (!serverIsOnline && typGry === 'cs2') {
       try {
         const steamApi = await axios.get(`https://steampowered.com{srv.host}:${srv.port}`, { timeout: 3000 });
-        if (steamApi.data?.response?.success && steamApi.data.response.servers?.length > 0) {
+        if (steamApi.data && steamApi.data.response && steamApi.data.response.success && steamApi.data.response.servers && steamApi.data.response.servers.length > 0) {
           serverIsOnline = true;
           const sData = steamApi.data.response.servers[0];
           if (sData.map && sData.map.trim().length > 0) {
@@ -100,7 +99,7 @@ export default async function handler(req, res) {
           }
         }
       } catch (e) {
-        // Cichy fallback - zachowujemy de_mirage, by nie powielać starych map
+        // Cichy fallback
       }
       serverIsOnline = true; // Utrzymujemy status ONLINE dla widoczności widgetu
     }
