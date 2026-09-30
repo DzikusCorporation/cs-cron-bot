@@ -1,0 +1,153 @@
+import dgram from 'dgram';
+import axios from 'axios';
+
+const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
+
+export default async function handler(req, res) {
+  // 1. Pobieramy dynamiczną listę serwerów z Twojej bazy danych przez index.php
+  let serwery = [];
+  try {
+    const getList = await axios.post(bramkaUrl, 'action=get_servers_list', {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 5000
+    });
+    if (Array.isArray(getList.data)) {
+      serwery = getList.data;
+    }
+  } catch (e) {
+    return res.status(500).json({ error: 'Brak dostepu do bazy: ' + e.message });
+  }
+
+  const paczkaDanych = [];
+
+  const sendUdp = (host, port, packet) => {
+    return new Promise((resolve) => {
+      const client = dgram.createSocket('udp4');
+      let received = false;
+      
+      client.send(packet, 0, packet.length, port, host, (err) => {
+        if (err) { client.close(); resolve(null); }
+      });
+
+      const timeout = setTimeout(() => {
+        if (!received) { client.close(); resolve(null); }
+      }, 2000);
+
+      client.on('message', (msg) => {
+        received = true;
+        clearTimeout(timeout);
+        client.close();
+        resolve(msg);
+      });
+    });
+  };
+
+  // 2. Pętla przetwarzająca każdy serwer za pomocą bezpośredniego UDP Valve
+  for (const srv of serwery) {
+    let map = 'zm_MC_green_box_v1';
+    let playersCount = 0;
+    let playersList = [];
+
+    // KROK A: Pobieramy mapę i podstawowy profil serwera (A2S_INFO)
+    const infoPacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x54, 0x53, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E, 0x65, 0x20, 0x51, 0x75, 0x65, 0x72, 0x79, 0x00]);
+    const infoBuffer = await sendUdp(srv.host, srv.port, infoPacket);
+
+    if (infoBuffer && infoBuffer.length > 10) {
+      const headerPos = infoBuffer.indexOf(0x49);
+      if (headerPos >= 0) {
+        const data = infoBuffer.slice(headerPos + 1);
+        const strings = [];
+        let currentStr = "";
+        for (let i = 1; i < data.length; i++) {
+          if (data[i] === 0x00) {
+            if (currentStr.trim().length > 0) strings.push(currentStr.trim());
+            currentStr = "";
+            if (strings.length >= 6) break;
+          } else {
+            currentStr += String.fromCharCode(data[i]);
+          }
+        }
+        for (const text of strings) {
+          if (text.toLowerCase().startsWith('de_') || text.toLowerCase().startsWith('cs_') || text.toLowerCase().startsWith('zm_')) {
+            map = text;
+            break;
+          }
+        }
+      }
+    }
+
+    // KROK B: Pobieranie listy graczy przez UDP
+    const challengePacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55, 0xFF, 0xFF, 0xFF, 0xFF]);
+    const challengeRes = await sendUdp(srv.host, srv.port, challengePacket);
+
+    if (challengeRes && challengeRes.length >= 9) {
+      const challengeToken = challengeRes.slice(5, 9);
+      const playerQuery = Buffer.concat([Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55]), challengeToken]);
+      const playerBuffer = await sendUdp(srv.host, srv.port, playerQuery);
+      
+      if (playerBuffer && playerBuffer.length > 6 && playerBuffer[4] === 0x44) {
+        let offset = 5;
+        const count = playerBuffer[offset++];
+        
+        for (let i = 0; i < count; i++) {
+          if (offset >= playerBuffer.length) break;
+          offset++;
+          
+          let nick = "";
+          while (offset < playerBuffer.length && playerBuffer[offset] !== 0x00) {
+            nick += String.fromCharCode(playerBuffer[offset]);
+            offset++;
+          }
+          offset++;
+          
+          if (offset + 8 > playerBuffer.length) break;
+          
+          const score = playerBuffer.readInt32LE(offset);
+          offset += 4;
+          
+          const timeSeconds = playerBuffer.readFloatLE(offset);
+          offset += 4;
+          
+          if (nick.trim().length > 0 && !nick.includes('HLTV') && score >= 0) {
+            const h = Math.floor(timeSeconds / 3600).toString().padStart(2, '0');
+            const m = Math.floor((timeSeconds % 3600) / 60).toString().padStart(2, '0');
+            const s = Math.floor(timeSeconds % 60).toString().padStart(2, '0');
+            
+            playersList.push({
+              nick: nick.replace(/[\x00-\x1F\x7F]/g, '').trim(),
+              score: score,
+              time: h + ':' + m + ':' + s
+            });
+          }
+        }
+      }
+    }
+
+    playersList.sort((a, b) => b.score - a.score);
+    playersCount = playersList.length;
+
+    paczkaDanych.push({
+      id: srv.id,
+      status: 'ONLINE',
+      name: '', 
+      map: map,
+      players: playersCount > 32 ? 32 : playersCount,
+      max_players: 32,
+      gracze_lista: playersList
+    });
+  }
+
+  // 3. Przesyłamy kompletne dane z listami nicków do Twojej bramki w SeoHost
+  try {
+    const response = await axios.post(bramkaUrl, 
+      'data_packet=' + encodeURIComponent(JSON.stringify(paczkaDanych)),
+      {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 8000
+      }
+    );
+    return res.status(200).json({ status: 'Sukces', response: response.data });
+  } catch (e) {
+    return res.status(500).json({ error: 'Blad bramki SeoHost: ' + e.message });
+  }
+}
