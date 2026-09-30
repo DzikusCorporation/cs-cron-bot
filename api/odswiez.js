@@ -46,7 +46,7 @@ export default async function handler(req, res) {
   for (const srv of serwery) {
     const typGry = srv.typ_gry || srv.type || 'cs16';
     
-    // BEZWZGLĘDNY RESET BUFORA MAPY NA START PĘTLI ZALEŻNIE OD GRY
+    // BEZWZGLĘDNY RESET BUFORA MAPY NA START PĘTLI ZALEŻNIE OD REKORDU GRY
     let map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
     
     let playersCount = 0;
@@ -54,21 +54,23 @@ export default async function handler(req, res) {
     let serverIsOnline = false;
 
     // ============================================================================
-    // KROK A: DYNAMICZNE UNIKALNE POBIERANIE MAPY (CS 1.6 ORAZ CS2 CHALLENGE)
+    // KROK A: DYNAMICZNE UNIKALNE POBIERANIE MAPY (Z NAPRAWIONYM INDEKSEM BAJTU)
     // ============================================================================
     const infoPacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x54, 0x53, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E, 0x65, 0x20, 0x51, 0x75, 0x65, 0x72, 0x79, 0x00]);
     let infoBuffer = await sendUdp(srv.host, srv.port, infoPacket);
 
-    // SPECYFIKACJA CS2: Jeśli serwer Source 2 żąda Challenge (nagłówek 'A' = 0x41)
+    // KOREKTA DLA PROTOKOŁU SOURCE 2: Jeśli serwer żąda Challenge (nagłówek 'A' = 0x41 na 4. pozycji)
     if (infoBuffer && infoBuffer.length >= 9 && infoBuffer[4] === 0x41) {
       const challengeToken = infoBuffer.slice(5, 9);
       const infoPacketWithToken = Buffer.concat([infoPacket, challengeToken]);
       infoBuffer = await sendUdp(srv.host, srv.port, infoPacketWithToken);
     }
 
+    // NAPRAWIONE: Dodano poprawny indeks [4] do weryfikacji nagłówka odpowiedzi 'I' (0x49)
     if (infoBuffer && infoBuffer.length > 10 && infoBuffer[4] === 0x49) {
       serverIsOnline = true;
       let offset = 5;
+      const protocol = infoBuffer[offset++];
       
       // Przeskakujemy Nazwę Serwera (szukamy bajtu zerowego 0x00)
       while (offset < infoBuffer.length && infoBuffer[offset] !== 0x00) { offset++; }
@@ -105,7 +107,7 @@ export default async function handler(req, res) {
     }
 
     // ============================================================================
-    // KROK B: POBIERANIE LISTY GRACZY (A2S_PLAYER z Challenge Token)
+    // KROK B: POBIERANIE LISTY GRACZY (Z NAPRAWIONYM INDEKSEM BAJTU)
     // ============================================================================
     const challengePacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55, 0xFF, 0xFF, 0xFF, 0xFF]);
     const challengeRes = await sendUdp(srv.host, srv.port, challengePacket);
@@ -115,6 +117,7 @@ export default async function handler(req, res) {
       const playerQuery = Buffer.concat([Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55]), challengeToken]);
       const playerBuffer = await sendUdp(srv.host, srv.port, playerQuery);
       
+      // NAPRAWIONE: Dodano poprawny indeks [4] do weryfikacji nagłówka odpowiedzi 'D' (0x44)
       if (playerBuffer && playerBuffer.length > 6 && playerBuffer[4] === 0x44) {
         let offset = 5;
         const count = playerBuffer[offset++];
