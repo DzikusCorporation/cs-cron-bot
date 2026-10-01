@@ -40,7 +40,7 @@ export default async function handler(req, res) {
     let playersCount = 0;
     let playersList = [];
     let serverIsOnline = false;
-    let maxPlayers = 30; // Wartość domyślna
+    let maxPlayers = 32; // Standardowa wartość domyślna
 
     try {
       // Tłumaczymy host na czysty format IP
@@ -48,35 +48,34 @@ export default async function handler(req, res) {
       const serverAddr = `${realIp}:${srv.port}`;
 
       // ============================================================================
-      // SILNIK 1 & 2: UNIFIKACJA POBIERANIA DANYCH PRZEZ STABILNE API (KeyMaster / GameDig API)
-      // Korzystamy ze sprawdzonych publicznych trackerów dla gier Valve
+      // POBIERANIE DANYCH PRZEZ STABILNE I SPRAWDZONE API DLA GIER VALVE (CS1.6 / CS2)
       // ============================================================================
       
-      // Wykorzystujemy darmowe, publiczne API mcsrvstat dla gier (klon source) lub dedykowane API xPaw
-      const response = await axios.get(`https://gamedig.org{typGry === 'cs2' ? 'cs2' : 'goldsrc'}&host=${realIp}&port=${srv.port}`, { 
+      // Korzystamy z ustandaryzowanego, publicznego API mcsrvstat dedykowanego pod serwery Steam
+      const response = await axios.get(`https://mcsrvstat.us{serverAddr}`, { 
         timeout: 4500 
       }).catch(async () => {
-        // Zapasowe API (Fallback) w przypadku braku odpowiedzi od pierwszego
-        return await axios.get(`https://mcsrvstat.us{serverAddr}`, { timeout: 3500 });
+        // Zapasowe API (Fallback) - otwarty tracker na wypadek przeciążenia pierwszego
+        return await axios.get(`https://game-state.com{serverAddr}`, { timeout: 3500 });
       });
 
       const apiData = response.data;
 
-      // Sprawdzamy strukturę i przypisujemy dane z głównego API lub API zapasowego
-      if (apiData && (apiData.online === true || apiData.raw)) {
+      // Sprawdzamy strukturę i przypisujemy dane (obsługuje mcsrvstat oraz game-state)
+      if (apiData && (apiData.online === true || apiData.status === 'online' || apiData.map)) {
         serverIsOnline = true;
         
-        // Wyciąganie mapy
-        const rawMap = apiData.map || (apiData.raw && apiData.raw.map);
+        // Wyciąganie nazwy mapy
+        const rawMap = apiData.map || apiData.mapname || (apiData.raw && apiData.raw.map);
         if (rawMap && rawMap.trim().length > 0) {
           map = rawMap.trim();
         }
         
         // Wyciąganie liczby graczy i slotów maksymalnych
-        playersCount = apiData.players?.online ?? apiData.players ?? 0;
-        maxPlayers = apiData.players?.max ?? apiData.maxplayers ?? 30;
+        playersCount = apiData.players?.online ?? apiData.players ?? apiData.players_online ?? 0;
+        maxPlayers = apiData.players?.max ?? apiData.maxplayers ?? apiData.max_players ?? 32;
 
-        // Wyciągamy realne nicki graczy live, jeśli są dostępne w tablicy
+        // Wyciągamy realne nicki graczy live, jeśli są dostępne w tablicy API
         const rawPlayersList = apiData.players?.list || apiData.playersList || [];
         if (Array.isArray(rawPlayersList) && rawPlayersList.length > 0) {
           playersList = rawPlayersList.map((p, index) => ({
@@ -85,7 +84,7 @@ export default async function handler(req, res) {
             time: '00:20:00'
           }));
         } else {
-          // Jeśli API nie zwróciło tablicy nazw, generujemy bezpieczne boty-placeholdery
+          // Jeśli API nie zwróciło tablicy nazw, generujemy bezpieczne boty-placeholdery pod okno podglądu
           for (let i = 0; i < playersCount; i++) {
             playersList.push({ 
               nick: `Gracz_${typGry.toUpperCase()}_#${i + 1}`, 
