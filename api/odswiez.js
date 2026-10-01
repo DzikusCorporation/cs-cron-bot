@@ -2,10 +2,12 @@ import axios from 'axios';
 
 const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 
-// Wpisujemy Twoje dwa serwery na sztywno z bazy, aby wyeliminować błędy pobierania listy IP
+// Wpisane poprawne numery ID oraz IP odczytane bezpośrednio z Twojego phpMyAdmin
 const SERWERY_DO_SPRAWDZENIA = [
-  { id: 1, type: 'cs16', host: '54.38.131.56', port: 27015 },
-  { id: 2, type: 'cs2',  host: '51.77.47.219', port: 27015 }
+  { id: 16, type: 'cs16', host: '51.83.166.59', port: 27015 },  // Serwer Zombie EXP 100 LVL
+  { id: 17, type: 'cs16', host: '54.38.131.56', port: 27015 },  // Serwer NGNW.PL [ONLY DD2]
+  { id: 18, type: 'cs2',  host: '51.83.210.20', port: 27015 },  // Serwer ★ MIRAGE ★
+  { id: 19, type: 'cs2',  host: '51.77.47.219', port: 27015 }   // Serwer ★ uwujka.pl ★ [CS2 ZMAPS]
 ];
 
 export default async function handler(req, res) {
