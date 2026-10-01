@@ -5,7 +5,6 @@ const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 export default async function handler(req, res) {
   let serwery = [];
   
-  // 1. Pobieranie listy serwerów z Twojej bazy danych
   try {
     const getList = await axios.post(bramkaUrl, 'action=get_servers_list', {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -15,7 +14,7 @@ export default async function handler(req, res) {
     if (getList.data && Array.isArray(getList.data)) {
       serwery = getList.data;
     } else {
-      return res.status(200).json({ status: 'Brak serwerów do przetworzenia w bazie' });
+      return res.status(200).json({ status: 'Brak serwerów w bazie' });
     }
   } catch (e) {
     return res.status(500).json({ error: 'Brak dostepu do bazy: ' + e.message });
@@ -23,7 +22,6 @@ export default async function handler(req, res) {
 
   const paczkaDanych = [];
 
-  // 2. Przetwarzanie serwerów
   for (const srv of serwery) {
     const typGry = srv.typ_gry || srv.type || 'cs16';
     const host = srv.host || srv.ip;
@@ -34,49 +32,46 @@ export default async function handler(req, res) {
     let maxPlayers = 32;
     let serverIsOnline = false;
 
-    // PRÓBA 1: Oficjalna masterlista Steam (Najwyższy priorytet dla CS2 i CS 1.6)
+    // PRÓBA 1: Użycie publicznego, otwartego proxy dla Masterlisty Valve (Bez klucza API)
     try {
       if (host) {
-        const steamResponse = await axios.get(`https://steampowered.com\\addr\\${host}:${port}`, { 
-          timeout: 3000 
+        const response = await axios.get(`https://vaughn.live{host}:${port}`, { 
+          timeout: 4000 
         });
 
-        if (steamResponse.data?.response?.servers?.length > 0) {
-          const sData = steamResponse.data.response.servers[0];
-          serverIsOnline = true;
-          map = sData.map || map;
-          playersCount = sData.players ?? 0;
-          maxPlayers = sData.max_players || 32;
+        if (response.data && typeof response.data.online !== 'undefined') {
+          const d = response.data;
+          if (d.online === true || d.players_online > 0 || d.map) {
+            serverIsOnline = true;
+            map = d.map || d.current_map || map;
+            playersCount = d.players ?? d.players_online ?? 0;
+            maxPlayers = d.max_players ?? 32;
+          }
         }
       }
     } catch (e) {
       serverIsOnline = false;
     }
 
-    // PRÓBA 2: Fallback do Game-State z mapowaniem wielkich i małych liter (Jeśli Steam nie odpowiedział)
+    // PRÓBA 2: Rezerwowe publiczne API (Game-State) jako fallback
     if (!serverIsOnline && host) {
       try {
         const gsResponse = await axios.get(`https://game-state.com{host}:${port}`, { 
           timeout: 3000 
         });
-
-        const d = gsResponse.data;
-        // Game-state potrafi zwrócić strukturę w d.data lub bezpośrednio w d
-        const root = d.data || d;
+        const root = gsResponse.data?.data || gsResponse.data;
 
         if (root && root.status !== 'offline') {
           serverIsOnline = true;
-          // UNIFIKACJA WIELKOŚCI LITER (API Game-State często zwraca klucze 'map' lub 'mapname')
-          map = root.map || root.mapname || root.MAP || root.MAPNAME || map;
-          playersCount = root.players ?? root.players_online ?? root.PLAYERS ?? 0;
-          maxPlayers = root.max_players ?? root.players_max ?? root.MAX_PLAYERS ?? 32;
+          map = root.map || root.mapname || map;
+          playersCount = root.players ?? root.players_online ?? 0;
+          maxPlayers = root.max_players ?? root.players_max ?? 32;
         }
-      } catch (e) {
+      } catch (gsError) {
         serverIsOnline = false;
       }
     }
 
-    // Bezpieczne mapowanie danych przed wysyłką do bazy MySQL
     paczkaDanych.push({
       id: parseInt(srv.id),
       status: serverIsOnline ? 'ONLINE' : 'OFFLINE',
@@ -88,7 +83,7 @@ export default async function handler(req, res) {
     });
   }
 
-  // 3. Przesłanie gotowych danych na hosting SeoHost
+  // 3. Przesłanie kompletnych danych do index.php na SeoHost
   try {
     const response = await axios.post(bramkaUrl, 
       'data_packet=' + encodeURIComponent(JSON.stringify(paczkaDanych)),
