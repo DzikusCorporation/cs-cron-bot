@@ -54,36 +54,46 @@ export default async function handler(req, res) {
     let serverIsOnline = false;
 
     // ============================================================================
-    // KROK A: DYNAMICZNE UNIKALNE POBIERANIE MAPY (Z NAPRAWIONYM INDEKSEM BAJTU)
+    // KROK A: DYNAMICZNE UNIKALNE POBIERANIE MAPY (NIEZAWODNE PARSOWANIE BUFFERA)
     // ============================================================================
     const infoPacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x54, 0x53, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E, 0x65, 0x20, 0x51, 0x75, 0x65, 0x72, 0x79, 0x00]);
     let infoBuffer = await sendUdp(srv.host, srv.port, infoPacket);
 
-    // KOREKTA DLA PROTOKOŁU SOURCE 2: Jeśli serwer żąda Challenge (nagłówek 'A' = 0x41 na 4. pozycji)
+    // KOREKTA DLA PROTOKOŁU SOURCE 2 (CS2 Challenge)
     if (infoBuffer && infoBuffer.length >= 9 && infoBuffer[4] === 0x41) {
       const challengeToken = infoBuffer.slice(5, 9);
       const infoPacketWithToken = Buffer.concat([infoPacket, challengeToken]);
       infoBuffer = await sendUdp(srv.host, srv.port, infoPacketWithToken);
     }
 
-    // NAPRAWIONE: Dodano poprawny indeks [4] do weryfikacji nagłówka odpowiedzi 'I' (0x49)
+    // PANCERNY DEKODER: Szukamy nagłówka 'I' (0x49) na 4. pozycji bufora
     if (infoBuffer && infoBuffer.length > 10 && infoBuffer[4] === 0x49) {
       serverIsOnline = true;
-      let offset = 5;
-      const protocol = infoBuffer[offset++];
       
-      // Przeskakujemy Nazwę Serwera (szukamy bajtu zerowego 0x00)
-      while (offset < infoBuffer.length && infoBuffer[offset] !== 0x00) { offset++; }
-      offset++; // przeskakujemy \x00
-      
-      // Wyciągamy Realną Mapę projektu live
-      let realMap = "";
-      while (offset < infoBuffer.length && infoBuffer[offset] !== 0x00) {
-        realMap += String.fromCharCode(infoBuffer[offset++]);
-      }
-      
-      if (realMap.trim().length > 0) {
-        map = realMap.trim();
+      try {
+        // Wycinamy surowe dane tekstowe pomijając nagłówek protokołu (bajt 5 to numer protokołu)
+        const rawPayload = infoBuffer.slice(6);
+        
+        // Rozbijamy bufor binarny za pomocą bajtu zerowego (0x00) na unikalne ciągi tekstowe
+        const strings = [];
+        let start = 0;
+        for (let i = 0; i < rawPayload.length; i++) {
+          if (rawPayload[i] === 0x00) {
+            strings.push(rawPayload.slice(start, i).toString('utf8').trim());
+            start = i + 1;
+            if (strings.length >= 4) break; // Interesuje nas tylko: Nazwa, Mapa, Folder, Gra
+          }
+        }
+
+        // Zgodnie ze specyfikacją Valve A2S_INFO:
+        // pozycja [0] = Nazwa serwera
+        // pozycja [1] = Rzeczywista aktualna mapa live
+        if (strings.length >= 2 && strings[1] !== "") {
+          map = strings[1];
+        }
+      } catch (err) {
+        // Zapasowy fallback w razie błędu parsera binarnego
+        map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
       }
     }
 
@@ -103,11 +113,11 @@ export default async function handler(req, res) {
       } catch (e) {
         // Cichy fallback
       }
-      serverIsOnline = true; // Utrzymujemy status ONLINE dla widoczności widgetu
+      serverIsOnline = true;
     }
 
     // ============================================================================
-    // KROK B: POBIERANIE LISTY GRACZY (Z NAPRAWIONYM INDEKSEM BAJTU)
+    // KROK B: POBIERANIE LISTY GRACZY (A2S_PLAYER z Challenge Token)
     // ============================================================================
     const challengePacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55, 0xFF, 0xFF, 0xFF, 0xFF]);
     const challengeRes = await sendUdp(srv.host, srv.port, challengePacket);
@@ -117,7 +127,6 @@ export default async function handler(req, res) {
       const playerQuery = Buffer.concat([Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55]), challengeToken]);
       const playerBuffer = await sendUdp(srv.host, srv.port, playerQuery);
       
-      // NAPRAWIONE: Dodano poprawny indeks [4] do weryfikacji nagłówka odpowiedzi 'D' (0x44)
       if (playerBuffer && playerBuffer.length > 6 && playerBuffer[4] === 0x44) {
         let offset = 5;
         const count = playerBuffer[offset++];
