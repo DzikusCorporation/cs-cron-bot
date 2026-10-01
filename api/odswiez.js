@@ -2,7 +2,6 @@ import axios from 'axios';
 
 const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 
-// Serwery odczytane bezpośrednio z Twojego phpMyAdmin
 const SERWERY_DO_SPRAWDZENIA = [
   { id: 16, type: 'cs16', host: '51.83.166.59', port: 27015 },  // Serwer Zombie EXP 100 LVL
   { id: 17, type: 'cs16', host: '54.38.131.56', port: 27015 },  // Serwer NGNW.PL [ONLY DD2]
@@ -13,35 +12,45 @@ const SERWERY_DO_SPRAWDZENIA = [
 export default async function handler(req, res) {
   const paczkaDanych = [];
 
-  // Równoległe odpytywanie wszystkich serwerów
   const obietnice = SERWERY_DO_SPRAWDZENIA.map(async (srv) => {
     const typGry = srv.type;
     
-    // Zabezpieczenie wartości startowych (pobieramy de_mirage lub de_dust2)
     let map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
     let playersCount = 0;
     let maxPlayers = 32;
     let serverIsOnline = false;
 
     try {
-      // Używamy darmowego, publicznego i stabilnego API Game-State przez HTTP GET
-      // Vercel nie ma blokad firewall i bez problemu przeczyta tę strukturę JSON
-      const response = await axios.get(`https://game-state.com{srv.host}:${srv.port}`, { 
+      // 1. Uderzamy do dedykowanego i darmowego API TrackyServer (Obsługuje polskie serwery społecznościowe bez żadnej weryfikacji tokenów)
+      const response = await axios.get(`https://trackyserver.com{srv.host}&port=${srv.port}`, { 
         timeout: 4000 
       });
 
-      const d = response.data;
-      const root = d.data || d;
-
-      if (root && root.status !== 'offline') {
+      if (response.data && response.data.map) {
         serverIsOnline = true;
-        // Elastyczne mapowanie kluczy (obsługuje wielkie i małe litery w parametrach)
-        map = root.map || root.mapname || root.MAP || root.MAPNAME || map;
-        playersCount = root.players ?? root.players_online ?? root.PLAYERS ?? 0;
-        maxPlayers = root.max_players ?? root.players_max ?? root.MAX_PLAYERS ?? 32;
+        map = response.data.map;
+        playersCount = response.data.players ?? 0;
+        maxPlayers = response.data.max_players ?? 32;
       }
     } catch (e) {
       serverIsOnline = false;
+    }
+
+    // FALLBACK (Gdyby pierwsze API miało opóźnienie, pytamy zapasowy publiczny węzeł proxy)
+    if (!serverIsOnline) {
+      try {
+        const responseFb = await axios.get(`https://mcsrvstat.us{srv.host}:${srv.port}`, {
+          timeout: 3000
+        });
+        if (responseFb.data && responseFb.data.online === true) {
+          serverIsOnline = true;
+          map = responseFb.data.map || map;
+          playersCount = responseFb.data.players?.online ?? 0;
+          maxPlayers = responseFb.data.players?.max ?? 32;
+        }
+      } catch (fbErr) {
+        serverIsOnline = false;
+      }
     }
 
     return {
@@ -55,7 +64,6 @@ export default async function handler(req, res) {
 
   const wyniki = await Promise.all(obietnice);
 
-  // Przesyłamy bezpieczną paczkę url-encoded do Twojego index.php na SeoHost
   const params = new URLSearchParams();
   params.append('data_packet', JSON.stringify(wyniki));
 
