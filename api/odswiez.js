@@ -1,110 +1,108 @@
-<?php
-// Wymuszenie wyświetlania błędów na czas testów
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
+import axios from 'axios';
 
-set_time_limit(30);
+const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 
-// Adres URL prowadzący do Twojego pliku index.php na SeoHost
-$bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
+export default async function handler(req, res) {
+  let serwery = [];
 
-// 1. Pobieramy dynamiczną lista serwerów z Twojej bazy danych przez index.php
-$options_list = array(
-    'http' => array(
-        'method'  => 'POST',
-        'header'  => 'Content-Type: application/x-www-form-urlencoded',
-        'content' => 'action=get_servers_list',
-        'timeout' => 5
-    )
-);
-$context_list = stream_context_create($options_list);
-$response_list = @file_get_contents($bramkaUrl, false, $context_list);
+  // 1. Pobieramy dynamiczną listę serwerów z Twojego index.php na SeoHost
+  try {
+    const getList = await axios.post(bramkaUrl, 'action=get_servers_list', {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 5000
+    });
 
-$serwery = json_decode($response_list, true);
+    if (getList.data && Array.isArray(getList.data)) {
+      serwery = getList.data;
+    } else {
+      return res.status(200).json({ status: 'Brak serwerów do przetworzenia w bazie' });
+    }
+  } catch (e) {
+    return res.status(500).json({ error: 'Brak komunikacji z index.php: ' + e.message });
+  }
 
-if (!is_array($serwery)) {
-    die("Brak dostepu do bazy danych lub lista serwerow jest pusta. Otrzymano: " . htmlspecialchars($response_list));
-}
+  const paczkaDanych = [];
 
-$paczkaDanych = array();
+  // 2. Odpytywanie wszystkich serwerów za pomocą stabilnych mostków HTTP API
+  for (const srv of serwery) {
+    const host = srv.host || srv.ip || '';
+    const port = parseInt(srv.port) || 27015;
+    const typGry = srv.typ_gry || srv.type || 'cs16';
+    const srv_id = parseInt(srv.id);
 
-// 2. Pętla przetwarzająca każdy serwer za pomocą niezawodnych mostków HTTP API
-foreach ($serwery as $srv) {
-    $host = isset($srv['host']) ? $srv['host'] : (isset($srv['ip']) ? $srv['ip'] : '');
-    $port = isset($srv['port']) ? intval($srv['port']) : 27015;
-    $typ_gry = isset($srv['typ_gry']) ? $srv['typ_gry'] : (isset($srv['type']) ? $srv['type'] : 'cs16');
-    $srv_id = intval($srv['id']);
+    if (!host || srv_id <= 0) continue;
 
-    if (empty($host) || $srv_id <= 0) continue;
+    // Pobieramy dotychczasowy stan z bazy, aby w razie awarii API nie resetować map zombie do de_dust2
+    let map = srv.mapa_live || (typGry === 'cs2' ? 'de_mirage' : 'de_dust2');
+    let playersCount = typeof srv.gracze_live !== 'undefined' ? parseInt(srv.gracze_live) : 0;
+    let maxPlayers = parseInt(srv.max_gracze_live) || 32;
+    let serverIsOnline = false;
 
-    // Pobieranie stanu z bazy, aby nie resetować map zombie przy ewentualnym timeoutcie API
-    $map = !empty($srv['mapa_live']) ? $srv['mapa_live'] : (($typ_gry === 'cs2') ? 'de_mirage' : 'de_dust2');
-    $playersCount = isset($srv['gracze_live']) ? intval($srv['gracze_live']) : 0;
-    $maxPlayers = !empty($srv['max_gracze_live']) ? intval($srv['max_gracze_live']) : 32;
-    $server_is_online = false;
+    // Przypisanie AppID według standardu Valve Steam (CS 1.6 = 10, CS2 = 730)
+    const appId = (typGry === 'cs16') ? 10 : 730;
 
-    // Przypisanie identyfikatora AppID gry sieciowej Steam (CS 1.6 = 10, CS2 = 730)
-    $appId = ($typ_gry === 'cs16') ? 10 : 730;
+    try {
+      // PRÓBA 1: Oficjalna publiczna masterlista Valve (nie wymaga klucza, działa na Vercelu)
+      const response = await axios.get(`https://steampowered.com\\appid\\${appId}\\addr\\${host}:${port}`, {
+        timeout: 3500
+      });
 
-    // PRÓBA 1: Oficjalny publiczny endpoint Valve - nie wymaga klucza API i działa bezpośrednio na Vercelu przez HTTP
-    $url_valve = "https://steampowered.com\\appid\\{$appId}\\addr\\{$host}:{$port}";
-    $ctx_valve = stream_context_create(array('http' => array('timeout' => 3)));
-    $res_valve = @file_get_contents($url_valve, false, $ctx_valve);
-
-    if ($res_valve) {
-        $json_valve = json_decode($res_valve, true);
-        if (!empty($json_valve['response']['servers'][0])) {
-            $sData = $json_valve['response']['servers'][0];
-            $server_is_online = true;
-            $map = !empty($sData['map']) ? trim($sData['map']) : $map;
-            $playersCount = isset($sData['players']) ? intval($sData['players']) : $playersCount;
-            $maxPlayers = !empty($sData['max_players']) ? intval($sData['max_players']) : $maxPlayers;
-        }
+      if (response.data?.response?.servers?.length > 0) {
+        const sData = response.data.response.servers[0];
+        serverIsOnline = true;
+        map = sData.map ? sData.map.trim() : map;
+        playersCount = typeof sData.players !== 'undefined' ? sData.players : playersCount;
+        maxPlayers = sData.max_players || maxPlayers;
+      }
+    } catch (e) {
+      serverIsOnline = false;
     }
 
-    // PRÓBA 2 (FALLBACK): Jeśli Valve milczy, uderzamy do darmowego trackera mcsrvstat
-    if (!$server_is_online) {
-        $url_fallback = "https://mcsrvstat.us{$host}:{$port}";
-        $ctx_fb = stream_context_create(array('http' => array('timeout' => 3)));
-        $res_fb = @file_get_contents($url_fallback, false, $ctx_fb);
+    // PRÓBA 2 (FALLBACK): Jeśli pierwsze API milczało, uderzamy do darmowego mcsrvstat dla gier Steam
+    if (!serverIsOnline) {
+      try {
+        const responseFb = await axios.get(`https://mcsrvstat.us{host}:${port}`, {
+          timeout: 3500
+        });
 
-        if ($res_fb) {
-            $json_fb = json_decode($res_fb, true);
-            if ($json_fb && isset($json_fb['online']) && $json_fb['online'] === true) {
-                $server_is_online = true;
-                $map = !empty($json_fb['map']) ? trim($json_fb['map']) : $map;
-                $playersCount = isset($json_fb['players']['online']) ? intval($json_fb['players']['online']) : $playersCount;
-                $maxPlayers = isset($json_fb['players']['max']) ? intval($json_fb['players']['max']) : $maxPlayers;
-            }
+        if (responseFb.data && responseFb.data.online === true) {
+          serverIsOnline = true;
+          map = responseFb.data.map ? responseFb.data.map.trim() : map;
+          playersCount = responseFb.data.players?.online ?? playersCount;
+          maxPlayers = responseFb.data.players?.max ?? maxPlayers;
         }
+      } catch (fbError) {
+        serverIsOnline = false;
+      }
     }
 
-    $real_status = $server_is_online ? 'ONLINE' : 'OFFLINE';
-    if (!$server_is_online) { $playersCount = 0; }
+    const finalStatus = serverIsOnline ? 'ONLINE' : 'OFFLINE';
+    if (!serverIsOnline) {
+      playersCount = 0; // Jeśli serwer zgaśnie, zerujemy graczy, ale zachowujemy ostatnią mapę zombie!
+    }
 
-    $paczkaDanych[] = array(
-        'id' => $srv_id,
-        'status' => $real_status,
-        'map' => $map,
-        'players' => intval($playersCount),
-        'max_players' => intval($maxPlayers),
-        'gracze_lista' => array()
-    );
+    paczkaDanych.push({
+      id: srv_id,
+      status: finalStatus,
+      map: map,
+      players: parseInt(playersCount),
+      max_players: parseInt(maxPlayers),
+      gracze_lista: []
+    });
+  }
+
+  // 3. Przesyłamy gotowy pakiet danych z powrotem na Twój hosting SeoHost w formularzu POST
+  try {
+    const params = new URLSearchParams();
+    params.append('data_packet', JSON.stringify(paczkaDanych));
+
+    const responseSave = await axios.post(bramkaUrl, params, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 5000
+    });
+
+    return res.status(200).json({ status: 'Sukces', odpowiedz_bramki: responseSave.data });
+  } catch (e) {
+    return res.status(500).json({ error: 'Blad podczas zapisu danych na SeoHost: ' + e.message });
+  }
 }
-
-// 3. Przesyłamy kompletny, bezpieczny pakiet danych w uniwersalnej zmiennej formularza POST na Twój hosting
-$postdata = http_build_query(array('data_packet' => json_encode($paczkaDanych)));
-$options_save = array(
-    'http' => array(
-        'method'  => 'POST',
-        'header'  => 'Content-Type: application/x-www-form-urlencoded',
-        'content' => $postdata,
-        'timeout' => 5
-    )
-);
-$context_save = stream_context_create($options_save);
-$output = @file_get_contents($bramkaUrl, false, $context_save);
-
-echo "Status odswiezania bramki: " . htmlspecialchars($output);
-?>
