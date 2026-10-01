@@ -1,8 +1,8 @@
-import query from 'source-server-query';
 import axios from 'axios';
 
 const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 
+// Wszystkie 4 serwery z Twojego phpMyAdmin z poprawnymi ID (16-19)
 const SERWERY_DO_SPRAWDZENIA = [
   { id: 16, type: 'cs16', host: '51.83.166.59', port: 27015 },  // Serwer Zombie EXP 100 LVL
   { id: 17, type: 'cs16', host: '54.38.131.56', port: 27015 },  // Serwer NGNW.PL [ONLY DD2]
@@ -13,38 +13,63 @@ const SERWERY_DO_SPRAWDZENIA = [
 export default async function handler(req, res) {
   const paczkaDanych = [];
 
-  for (const srv of SERWERY_DO_SPRAWDZENIA) {
-    let map = (srv.type === 'cs2') ? 'de_mirage' : 'de_dust2';
+  // Równoległe odpytywanie niezależnych trackerów HTTP GET
+  const obietnice = SERWERY_DO_SPRAWDZENIA.map(async (srv) => {
+    const typGry = srv.type;
+    
+    // Zabezpieczenie wartości (jeśli api zawiedzie, zostawiamy de_dust2 / de_mirage)
+    let map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
     let playersCount = 0;
     let maxPlayers = 32;
     let serverIsOnline = false;
 
+    // METODA 1: Zapytanie do stabilnego publicznego API TrackyServer
     try {
-      // Wywołanie oficjalnego zapytania A2S_INFO z automatyczną obsługą Challenge Tokenów
-      const info = await query.info(srv.host, srv.port, 2000);
+      const response = await axios.get(`https://trackyserver.com{srv.host}&port=${srv.port}`, { 
+        timeout: 3000 
+      });
 
-      if (info && info.map) {
+      if (response.data && response.data.map) {
         serverIsOnline = true;
-        map = info.map.trim();
-        playersCount = typeof info.players !== 'undefined' ? info.players : 0;
-        maxPlayers = info.maxPlayers || 32;
+        map = response.data.map;
+        playersCount = response.data.players ?? 0;
+        maxPlayers = response.data.max_players ?? 32;
       }
     } catch (e) {
       serverIsOnline = false;
     }
 
-    paczkaDanych.push({
+    // METODA 2 (FALLBACK): Jeśli pierwsze API milczało, uderzamy do mcsrvstat przez bezpieczny tunel HTTP
+    if (!serverIsOnline) {
+      try {
+        const responseFb = await axios.get(`https://mcsrvstat.us{srv.host}:${srv.port}`, {
+          timeout: 3000
+        });
+        if (responseFb.data && responseFb.data.online === true) {
+          serverIsOnline = true;
+          map = responseFb.data.map || map;
+          playersCount = responseFb.data.players?.online ?? 0;
+          maxPlayers = responseFb.data.players?.max ?? 32;
+        }
+      } catch (fbErr) {
+        serverIsOnline = false;
+      }
+    }
+
+    return {
       id: parseInt(srv.id),
       status: serverIsOnline ? 'ONLINE' : 'OFFLINE',
-      map: map.replace(/[\x00-\x1F\x7F]/g, ""), // Oczyszczanie ukrytych bajtów binarnych
+      map: map.toString().trim(),
       players: serverIsOnline ? parseInt(playersCount) : 0,
       max_players: parseInt(maxPlayers)
-    });
-  }
+    };
+  });
 
-  // Przesyłamy bezpieczną, sparsowaną paczkę danych do index.php na SeoHost
+  const wyniki = await Promise.all(obietnice);
+
+  // Pakujemy dane i przesyłamy je bezpiecznie tradycyjną metodą formularza POST
   const params = new URLSearchParams();
-  params.append('data_packet', JSON.stringify(paczkaDanych));
+  params.append('data_packet', JSON.stringify(wyniki));
 
   try {
     const responseSave = await axios.post(bramkaUrl, params, {
@@ -54,6 +79,6 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ status: 'Sukces', odpowiedz_bramki: responseSave.data });
   } catch (e) {
-    return res.status(500).json({ error: 'Blad komunikacji z index.php: ' + e.message });
+    return res.status(500).json({ error: 'Blad podczas zapisu danych na SeoHost: ' + e.message });
   }
 }
