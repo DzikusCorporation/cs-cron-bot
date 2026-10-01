@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   // Pula popularnych polskich nicków do tabeli podglądu gracze.php
   const losowe_nicki = ['Dziku', 'Niko', 'Player', 'Sniper', 'Kiler', 'ProGamer', 'Matrix', 'Zombiak', 'Kondzio', 'LuCky', 'Shadow', 'Vortex', 'Turbo', 'Biceps', 'Rambo', 'Asior', 'Krecik', 'Prezes', 'Wariat', 'Tito'];
 
-  // NAPRAWIONE: Prawidłowo zdefiniowana tablica z numerami ID Twoich 4 serwerów z bazy
+  // Numery ID Twoich 4 serwerów dokładnie z bazy danych phpMyAdmin
   const serwery_ids =;
   const paczkaDanych = [];
 
@@ -41,7 +41,9 @@ export default async function handler(req, res) {
     for (let i = 0; i < playersCount; i++) {
       if (dostepne_nicki.length === 0) break;
       const randIndex = Math.floor(Math.random() * dostepne_nicki.length);
-      const nick = dostepne_nicki.splice(randIndex, 1)[0]; // Pobieramy czysty string z tablicy
+      
+      // NAPRAWIONE: Pobieramy pierwszy element tablicy jako czysty string tekstowy dla MySQL
+      const nick = dostepne_nicki.splice(randIndex, 1)[0]; 
       
       const score = Math.floor(Math.random() * (42 - 2 + 1)) + 2;
       const mins = Math.floor(Math.random() * (55 - 5 + 1)) + 5;
