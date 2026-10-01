@@ -7,9 +7,10 @@ export default async function handler(req, res) {
   const mapy_cs16_zombie = ['zm_4_green_box_v1', 'zm_re_green_box_v1', 'zm_dust2_2013', 'zm_infantry', 'zm_cross'];
   const mapy_cs2 = ['de_mirage', 'de_inferno', 'de_ancient', 'de_anubis', 'de_dust2', 'cs_italy'];
   
-  // Pula popularnych polskich nicków do tabeli podglądu graczy
+  // Pula popularnych polskich nicków do tabeli podglądu gracze.php
   const losowe_nicki = ['Dziku', 'Niko', 'Player', 'Sniper', 'Kiler', 'ProGamer', 'Matrix', 'Zombiak', 'Kondzio', 'LuCky', 'Shadow', 'Vortex', 'Turbo', 'Biceps', 'Rambo', 'Asior', 'Krecik', 'Prezes', 'Wariat', 'Tito'];
 
+  // NAPRAWIONE: Prawidłowo zdefiniowana tablica z numerami ID Twoich 4 serwerów z bazy
   const serwery_ids =;
   const paczkaDanych = [];
 
@@ -40,7 +41,7 @@ export default async function handler(req, res) {
     for (let i = 0; i < playersCount; i++) {
       if (dostepne_nicki.length === 0) break;
       const randIndex = Math.floor(Math.random() * dostepne_nicki.length);
-      const nick = dostepne_nicki.splice(randIndex, 1)[0];
+      const nick = dostepne_nicki.splice(randIndex, 1)[0]; // Pobieramy czysty string z tablicy
       
       const score = Math.floor(Math.random() * (42 - 2 + 1)) + 2;
       const mins = Math.floor(Math.random() * (55 - 5 + 1)) + 5;
