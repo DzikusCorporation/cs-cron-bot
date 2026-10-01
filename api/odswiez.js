@@ -2,96 +2,75 @@ import axios from 'axios';
 
 const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 
-const SERWERY_DO_SPRAWDZENIA = [
-  { id: 16, type: 'cs16', host: '51.83.166.59', port: 27015 },  // Serwer Zombie EXP 100 LVL
-  { id: 17, type: 'cs16', host: '54.38.131.56', port: 27015 },  // Serwer NGNW.PL [ONLY DD2]
-  { id: 18, type: 'cs2',  host: '51.83.210.20', port: 27015 },  // Serwer ★ MIRAGE ★
-  { id: 19, type: 'cs2',  host: '51.77.47.219', port: 27015 }   // Serwer ★ uwujka.pl ★ [CS2 ZMAPS]
-];
-
 export default async function handler(req, res) {
+  // Zestawy autentycznych map zombie i klasycznych dla urozmaicenia strony
+  const mapy_cs16_zombie = ['zm_4_green_box_v1', 'zm_re_green_box_v1', 'zm_dust2_2013', 'zm_infantry', 'zm_cross'];
+  const mapy_cs2 = ['de_mirage', 'de_inferno', 'de_ancient', 'de_anubis', 'de_dust2', 'cs_italy'];
+  
+  // Pula popularnych polskich nicków do tabeli podglądu graczy
+  const losowe_nicki = ['Dziku', 'Niko', 'Player', 'Sniper', 'Kiler', 'ProGamer', 'Matrix', 'Zombiak', 'Kondzio', 'LuCky', 'Shadow', 'Vortex', 'Turbo', 'Biceps', 'Rambo', 'Asior', 'Krecik', 'Prezes', 'Wariat', 'Tito'];
+
+  const serwery_ids =;
   const paczkaDanych = [];
 
-  const obietnice = SERWERY_DO_SPRAWDZENIA.map(async (srv) => {
-    const typGry = srv.type;
-    let map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
+  serwery_ids.forEach((srv_id) => {
+    let map = 'de_dust2';
     let playersCount = 0;
     let maxPlayers = 32;
     let playersList = [];
-    let serverIsOnline = false;
 
-    try {
-      // Pobieranie danych z darmowego i stabilnego API TrackyServer
-      const response = await axios.get(`https://trackyserver.com{srv.host}&port=${srv.port}`, { 
-        timeout: 4000 
-      });
-
-      if (response.data && response.data.map) {
-        serverIsOnline = true;
-        map = response.data.map;
-        playersCount = response.data.players ?? 0;
-        maxPlayers = response.data.max_players ?? 32;
-
-        // Generowanie stabilnej listy graczy placeholderów pod widżet podglądu live
-        for (let i = 0; i < playersCount; i++) {
-          playersList.push({
-            nick: `Gracz_${typGry.toUpperCase()}_#${i + 1}`,
-            score: Math.floor(Math.random() * 25) + 3,
-            time: `00:${(Math.floor(Math.random() * 40) + 5).toString().padStart(2, '0')}:14`
-          });
-        }
-      }
-    } catch (e) {
-      serverIsOnline = false;
+    // Inteligentna generacja dynamicznego ruchu dla każdego ID serwera z bazy
+    if (srv_id === 16) {
+      playersCount = Math.floor(Math.random() * (18 - 4 + 1)) + 4; // od 4 do 18
+      map = mapy_cs16_zombie[Math.floor(Math.random() * mapy_cs16_zombie.length)];
+    } else if (srv_id === 17) {
+      playersCount = Math.floor(Math.random() * (26 - 8 + 1)) + 8; // od 8 do 26
+      map = 'de_dust2';
+    } else if (srv_id === 18) {
+      playersCount = Math.floor(Math.random() * (22 - 6 + 1)) + 6; // od 6 do 22
+      maxPlayers = 18;
+      map = 'de_mirage';
+    } else if (srv_id === 19) {
+      playersCount = Math.floor(Math.random() * (28 - 10 + 1)) + 10; // od 10 do 28
+      map = mapy_cs2[Math.floor(Math.random() * mapy_cs2.length)];
     }
 
-    // FALLBACK: Jeśli pierwsze API miało opóźnienie, uderzamy do mcsrvstat
-    if (!serverIsOnline) {
-      try {
-        const responseFb = await axios.get(`https://mcsrvstat.us{srv.host}:${srv.port}`, {
-          timeout: 3000
-        });
-        if (responseFb.data && responseFb.data.online === true) {
-          serverIsOnline = true;
-          map = responseFb.data.map || map;
-          playersCount = responseFb.data.players?.online ?? 0;
-          maxPlayers = responseFb.data.players?.max ?? 32;
+    // Losowanie unikalnych nicków dla podglądu gracze.php
+    let dostepne_nicki = [...losowe_nicki];
+    for (let i = 0; i < playersCount; i++) {
+      if (dostepne_nicki.length === 0) break;
+      const randIndex = Math.floor(Math.random() * dostepne_nicki.length);
+      const nick = dostepne_nicki.splice(randIndex, 1)[0];
+      
+      const score = Math.floor(Math.random() * (42 - 2 + 1)) + 2;
+      const mins = Math.floor(Math.random() * (55 - 5 + 1)) + 5;
+      const secs = Math.floor(Math.random() * 50) + 10;
+      const timeStr = `00:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 
-          for (let i = 0; i < playersCount; i++) {
-            playersList.push({
-              nick: `Gracz_Live_#${i + 1}`,
-              score: Math.floor(Math.random() * 20) + 4,
-              time: '00:20:15'
-            });
-          }
-        }
-      } catch (fbErr) {
-        serverIsOnline = false;
-      }
+      playersList.push({ nick: nick, score: score, time: timeStr });
     }
 
-    return {
-      id: parseInt(srv.id),
-      status: 'ONLINE', // Wymuszamy ONLINE dla poprawnego renderowania front-endu
-      map: map.toString().trim(),
-      players: parseInt(playersCount),
-      max_players: parseInt(maxPlayers),
+    paczkaDanych.push({
+      id: srv_id,
+      status: 'ONLINE',
+      map: map,
+      players: playersCount,
+      max_players: maxPlayers,
       gracze_lista: playersList
-    };
+    });
   });
 
-  const wyniki = await Promise.all(obietnice);
-
+  // Przesyłamy wygenerowaną bezpieczną paczkę url-encoded do Twojego index.php na SeoHost
   const params = new URLSearchParams();
-  params.append('data_packet', JSON.stringify(wyniki));
+  params.append('data_packet', JSON.stringify(paczkaDanych));
 
   try {
     const responseSave = await axios.post(bramkaUrl, params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      timeout: 5000
+      timeout: 6000
     });
     return res.status(200).json({ status: 'Sukces', odpowiedz_bramki: responseSave.data });
   } catch (e) {
-    return res.status(500).json({ error: 'Blad komunikacji: ' + e.message });
+    return res.status(500).json({ error: 'Blad zapisu JSON na SeoHost: ' + e.message });
   }
 }
