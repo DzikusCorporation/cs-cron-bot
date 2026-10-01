@@ -6,19 +6,20 @@ error_reporting(E_ALL);
 
 set_time_limit(30);
 
-// TUTAJ: Upewnij się, że ten URL prowadzi dokładnie do Twojego pliku index.php na SeoHost!
+// Adres URL prowadzący do Twojego pliku index.php na SeoHost
 $bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 
-// 1. Pobieramy dynamiczną listę serwerów z Twojej bazy danych przez index.php
-$ch = curl_init();
-curl_setopt($ch, CURLOPT_URL, $bramkaUrl);
-curl_setopt($ch, CURLOPT_POST, 1);
-curl_setopt($ch, CURLOPT_POSTFIELDS, 'action=get_servers_list');
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-$response_list = curl_exec($ch);
-curl_close($ch);
+// 1. Pobieramy dynamiczną lista serwerów z Twojej bazy danych przez index.php
+$options_list = array(
+    'http' => array(
+        'method'  => 'POST',
+        'header'  => 'Content-Type: application/x-www-form-urlencoded',
+        'content' => 'action=get_servers_list',
+        'timeout' => 5
+    )
+);
+$context_list = stream_context_create($options_list);
+$response_list = @file_get_contents($bramkaUrl, false, $context_list);
 
 $serwery = json_decode($response_list, true);
 
@@ -26,24 +27,10 @@ if (!is_array($serwery)) {
     die("Brak dostepu do bazy danych lub lista serwerow jest pusta. Otrzymano: " . htmlspecialchars($response_list));
 }
 
-// Bezpieczna funkcja cURL do odpytywania stabilnych zewnętrznych HTTP WebAPI
-function pobierzHttp($url) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 4);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Valve/Steam-Client');
-    $data = curl_exec($ch);
-    curl_close($ch);
-    return $data;
-}
-
 $paczkaDanych = array();
 
 // 2. Pętla przetwarzająca każdy serwer za pomocą niezawodnych mostków HTTP API
 foreach ($serwery as $srv) {
-    // Akceptujemy zarówno klucze 'host' jak i 'ip' z bazy danych
     $host = isset($srv['host']) ? $srv['host'] : (isset($srv['ip']) ? $srv['ip'] : '');
     $port = isset($srv['port']) ? intval($srv['port']) : 27015;
     $typ_gry = isset($srv['typ_gry']) ? $srv['typ_gry'] : (isset($srv['type']) ? $srv['type'] : 'cs16');
@@ -51,48 +38,50 @@ foreach ($serwery as $srv) {
 
     if (empty($host) || $srv_id <= 0) continue;
 
-    // Przypisanie bezpiecznych wartości domyślnych (pobieranych ze stanu bazy, by nie resetować map zombie!)
+    // Pobieranie stanu z bazy, aby nie resetować map zombie przy ewentualnym timeoutcie API
     $map = !empty($srv['mapa_live']) ? $srv['mapa_live'] : (($typ_gry === 'cs2') ? 'de_mirage' : 'de_dust2');
     $playersCount = isset($srv['gracze_live']) ? intval($srv['gracze_live']) : 0;
     $maxPlayers = !empty($srv['max_gracze_live']) ? intval($srv['max_gracze_live']) : 32;
     $server_is_online = false;
 
-    // PRÓBA 1: Odpytanie przez globalne, stabilne i darmowe API mcsrvstat dedykowane serwerom Steam
-    $apiUrl = "https://mcsrvstat.us{$host}:{$port}";
-    $apiResponse = pobierzHttp($apiUrl);
+    // Przypisanie identyfikatora AppID gry sieciowej Steam (CS 1.6 = 10, CS2 = 730)
+    $appId = ($typ_gry === 'cs16') ? 10 : 730;
 
-    if ($apiResponse) {
-        $json = json_decode($apiResponse, true);
-        if ($json && isset($json['online']) && $json['online'] === true) {
+    // PRÓBA 1: Oficjalny publiczny endpoint Valve - nie wymaga klucza API i działa bezpośrednio na Vercelu przez HTTP
+    $url_valve = "https://steampowered.com\\appid\\{$appId}\\addr\\{$host}:{$port}";
+    $ctx_valve = stream_context_create(array('http' => array('timeout' => 3)));
+    $res_valve = @file_get_contents($url_valve, false, $ctx_valve);
+
+    if ($res_valve) {
+        $json_valve = json_decode($res_valve, true);
+        if (!empty($json_valve['response']['servers'][0])) {
+            $sData = $json_valve['response']['servers'][0];
             $server_is_online = true;
-            $map = !empty($json['map']) ? trim($json['map']) : $map;
-            $playersCount = isset($json['players']['online']) ? intval($json['players']['online']) : $playersCount;
-            $maxPlayers = isset($json['players']['max']) ? intval($json['players']['max']) : $maxPlayers;
+            $map = !empty($sData['map']) ? trim($sData['map']) : $map;
+            $playersCount = isset($sData['players']) ? intval($sData['players']) : $playersCount;
+            $maxPlayers = !empty($sData['max_players']) ? intval($sData['max_players']) : $maxPlayers;
         }
     }
 
-    // PRÓBA 2 (FALLBACK): Jeśli pierwsze API milczy, uderzamy do rozproszonego API trackera xPaw
+    // PRÓBA 2 (FALLBACK): Jeśli Valve milczy, uderzamy do darmowego trackera mcsrvstat
     if (!$server_is_online) {
-        $fallbackUrl = "https://vaughn.live{$host}:{$port}";
-        $fbResponse = pobierzHttp($fallbackUrl);
+        $url_fallback = "https://mcsrvstat.us{$host}:{$port}";
+        $ctx_fb = stream_context_create(array('http' => array('timeout' => 3)));
+        $res_fb = @file_get_contents($url_fallback, false, $ctx_fb);
 
-        if ($fbResponse) {
-            $json_fb = json_decode($fbResponse, true);
-            if ($json_fb && (isset($json_fb['online']) && $json_fb['online'] === true || isset($json_fb['map']))) {
+        if ($res_fb) {
+            $json_fb = json_decode($res_fb, true);
+            if ($json_fb && isset($json_fb['online']) && $json_fb['online'] === true) {
                 $server_is_online = true;
-                $map = !empty($json_fb['map']) ? trim($json_fb['map']) : (!empty($json_fb['current_map']) ? trim($json_fb['current_map']) : $map);
-                $playersCount = isset($json_fb['players_online']) ? intval($json_fb['players_online']) : (isset($json_fb['players']) ? intval($json_fb['players']) : $playersCount);
-                $maxPlayers = !empty($json_fb['max_players']) ? intval($json_fb['max_players']) : $maxPlayers;
+                $map = !empty($json_fb['map']) ? trim($json_fb['map']) : $map;
+                $playersCount = isset($json_fb['players']['online']) ? intval($json_fb['players']['online']) : $playersCount;
+                $maxPlayers = isset($json_fb['players']['max']) ? intval($json_fb['players']['max']) : $maxPlayers;
             }
         }
     }
 
     $real_status = $server_is_online ? 'ONLINE' : 'OFFLINE';
-
-    // Jeśli serwer faktycznie zgaśnie (offline), zerujemy graczy, ale zachowujemy ostatnią znaną mapę zombie
-    if (!$server_is_online) {
-        $playersCount = 0;
-    }
+    if (!$server_is_online) { $playersCount = 0; }
 
     $paczkaDanych[] = array(
         'id' => $srv_id,
@@ -104,16 +93,18 @@ foreach ($serwery as $srv) {
     );
 }
 
-// 3. Przesyłamy kompletny, bezpieczny pakiet danych w uniwersalnej zmiennej formularza na Twój hosting
-$ch = curl_init();
-curl_setopt($ch, CURLOPT_URL, $bramkaUrl);
-curl_setopt($ch, CURLOPT_POST, 1);
-curl_setopt($ch, CURLOPT_POSTFIELDS, 'data_packet=' . urlencode(json_encode($paczkaDanych)));
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-curl_setopt($ch, CURLOPT_TIMEOUT, 8);
-$output = curl_exec($ch);
-curl_close($ch);
+// 3. Przesyłamy kompletny, bezpieczny pakiet danych w uniwersalnej zmiennej formularza POST na Twój hosting
+$postdata = http_build_query(array('data_packet' => json_encode($paczkaDanych)));
+$options_save = array(
+    'http' => array(
+        'method'  => 'POST',
+        'header'  => 'Content-Type: application/x-www-form-urlencoded',
+        'content' => $postdata,
+        'timeout' => 5
+    )
+);
+$context_save = stream_context_create($options_save);
+$output = @file_get_contents($bramkaUrl, false, $context_save);
 
 echo "Status odswiezania bramki: " . htmlspecialchars($output);
 ?>
