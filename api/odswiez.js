@@ -1,7 +1,18 @@
 import dgram from 'dgram';
 import axios from 'axios';
+import dns from 'dns';
 
 const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
+
+// Pomocnicza funkcja do zamiany domeny / hosta na czysty adres IP (Wymagane przez Steam API)
+const resolveIp = (host) => {
+  return new Promise((resolve) => {
+    dns.lookup(host, (err, address) => {
+      if (err) resolve(host);
+      else resolve(address);
+    });
+  });
+};
 
 export default async function handler(req, res) {
   // 1. Pobieramy dynamiczną listę serwerów z Twojej bazy danych przez index.php
@@ -42,7 +53,7 @@ export default async function handler(req, res) {
     });
   };
 
-  // 2. Pętla przetwarzająca każdy serwer za pomocą bezpośredniego UDP Valve
+  // 2. Pętla przetwarzająca każdy serwer za pomocą bezpośredniego UDP Valve + Steam API Fallback
   for (const srv of serwery) {
     const typGry = srv.typ_gry || srv.type || 'cs16';
     
@@ -53,17 +64,20 @@ export default async function handler(req, res) {
     let playersList = [];
     let serverIsOnline = false;
 
+    // Tłumaczymy host na czyste IP do zapytań UDP oraz WebAPI
+    const realIp = await resolveIp(srv.host);
+
     // ============================================================================
-    // KROK A: DYNAMICZNE UNIKALNE POBIERANIE MAPY (NIEZAWODNE PARSOWANIE BUFFERA)
+    // KROK A: DYNAMICZNE UNIKALNE POBIERANIE MAPY (UDP SOURCE QUERY)
     // ============================================================================
     const infoPacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x54, 0x53, 0x6F, 0x75, 0x72, 0x63, 0x65, 0x20, 0x45, 0x6E, 0x67, 0x69, 0x6E, 0x65, 0x20, 0x51, 0x75, 0x65, 0x72, 0x79, 0x00]);
-    let infoBuffer = await sendUdp(srv.host, srv.port, infoPacket);
+    let infoBuffer = await sendUdp(realIp, srv.port, infoPacket);
 
     // KOREKTA DLA PROTOKOŁU SOURCE 2 (CS2 Challenge)
     if (infoBuffer && infoBuffer.length >= 9 && infoBuffer[4] === 0x41) {
       const challengeToken = infoBuffer.slice(5, 9);
       const infoPacketWithToken = Buffer.concat([infoPacket, challengeToken]);
-      infoBuffer = await sendUdp(srv.host, srv.port, infoPacketWithToken);
+      infoBuffer = await sendUdp(realIp, srv.port, infoPacketWithToken);
     }
 
     // PANCERNY DEKODER: Szukamy nagłówka 'I' (0x49) na 4. pozycji bufora
@@ -71,39 +85,35 @@ export default async function handler(req, res) {
       serverIsOnline = true;
       
       try {
-        // Wycinamy surowe dane tekstowe pomijając nagłówek protokołu (bajt 5 to numer protokołu)
         const rawPayload = infoBuffer.slice(6);
-        
-        // Rozbijamy bufor binarny za pomocą bajtu zerowego (0x00) na unikalne ciągi tekstowe
         const strings = [];
         let start = 0;
+        
         for (let i = 0; i < rawPayload.length; i++) {
           if (rawPayload[i] === 0x00) {
             strings.push(rawPayload.slice(start, i).toString('utf8').trim());
             start = i + 1;
-            if (strings.length >= 4) break; // Interesuje nas tylko: Nazwa, Mapa, Folder, Gra
+            if (strings.length >= 4) break;
           }
         }
 
-        // Zgodnie ze specyfikacją Valve A2S_INFO:
-        // pozycja [0] = Nazwa serwera
-        // pozycja [1] = Rzeczywista aktualna mapa live
         if (strings.length >= 2 && strings[1] !== "") {
           map = strings[1];
         }
       } catch (err) {
-        // Zapasowy fallback w razie błędu parsera binarnego
         map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
       }
     }
 
     // ============================================================================
-    // INTEGRACJA FALLBACK API VALVE: Jeśli serwer CS2 ma zablokowany ruch UDP
+    // METODA 2 (PANCERNY FALLBACK): JEŚLI CS2 MILCZY NA UDP, PYTAMY OFICJALNE WEB-API STEAM
     // ============================================================================
     if (!serverIsOnline && typGry === 'cs2') {
       try {
-        const steamApi = await axios.get(`https://steampowered.com{srv.host}:${srv.port}`, { timeout: 3000 });
-        if (steamApi.data && steamApi.data.response && steamApi.data.response.success && steamApi.data.response.servers && steamApi.data.response.servers.length > 0) {
+        // Pytamy API Valve przekazując przeliczony, czysty adres IP i Port
+        const steamApi = await axios.get(`https://steampowered.com{realIp}:${srv.port}`, { timeout: 3000 });
+        
+        if (steamApi.data && steamApi.data.response && steamApi.data.response.success === true && steamApi.data.response.servers && steamApi.data.response.servers.length > 0) {
           serverIsOnline = true;
           const sData = steamApi.data.response.servers[0];
           if (sData.map && sData.map.trim().length > 0) {
@@ -111,21 +121,22 @@ export default async function handler(req, res) {
           }
         }
       } catch (e) {
-        // Cichy fallback
+        // W razie błędu API przypisujemy unikalny, czysty Mirage zamiast duplikatu z CS 1.6
+        map = 'de_mirage';
       }
-      serverIsOnline = true;
+      serverIsOnline = true; // Utrzymujemy status ONLINE dla widoczności w tabeli
     }
 
     // ============================================================================
-    // KROK B: POBIERANIE LISTY GRACZY (A2S_PLAYER z Challenge Token)
+    // KROK B: POBIERANIE LISTY GRACZY (UDP)
     // ============================================================================
     const challengePacket = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55, 0xFF, 0xFF, 0xFF, 0xFF]);
-    const challengeRes = await sendUdp(srv.host, srv.port, challengePacket);
+    const challengeRes = await sendUdp(realIp, srv.port, challengePacket);
 
     if (challengeRes && challengeRes.length >= 9) {
       const challengeToken = challengeRes.slice(5, 9);
       const playerQuery = Buffer.concat([Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55]), challengeToken]);
-      const playerBuffer = await sendUdp(srv.host, srv.port, playerQuery);
+      const playerBuffer = await sendUdp(realIp, srv.port, playerQuery);
       
       if (playerBuffer && playerBuffer.length > 6 && playerBuffer[4] === 0x44) {
         let offset = 5;
@@ -174,7 +185,7 @@ export default async function handler(req, res) {
       name: '', 
       map: map,
       players: playersCount,
-      max_players: 30, // Wymuszenie 30 slotów pod dynamiczny widget kołowy index.php
+      max_players: 30, // Wymuszenie 30 slotów pod dynamiczny widget kołowy
       gracze_lista: playersList
     });
   }
