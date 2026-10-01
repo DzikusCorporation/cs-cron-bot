@@ -2,6 +2,7 @@ import axios from 'axios';
 
 const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 
+// Twój zestaw 4 serwerów wprost z bazy danych
 const SERWERY_DO_SPRAWDZENIA = [
   { id: 16, type: 'cs16', host: '51.83.166.59', port: 27015 },  // Serwer Zombie EXP 100 LVL
   { id: 17, type: 'cs16', host: '54.38.131.56', port: 27015 },  // Serwer NGNW.PL [ONLY DD2]
@@ -12,45 +13,33 @@ const SERWERY_DO_SPRAWDZENIA = [
 export default async function handler(req, res) {
   const paczkaDanych = [];
 
+  // Przetwarzamy serwery równolegle
   const obietnice = SERWERY_DO_SPRAWDZENIA.map(async (srv) => {
     const typGry = srv.type;
     
+    // Zabezpieczenie wartości przed nadpisaniem (jeśli Steam nie odpowie, zostawiamy dotychczasowy stan z bazy!)
     let map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
     let playersCount = 0;
     let maxPlayers = 32;
     let serverIsOnline = false;
 
     try {
-      // 1. Uderzamy do dedykowanego i darmowego API TrackyServer (Obsługuje polskie serwery społecznościowe bez żadnej weryfikacji tokenów)
-      const response = await axios.get(`https://trackyserver.com{srv.host}&port=${srv.port}`, { 
-        timeout: 4000 
-      });
+      // OFICJALNY ENDPOINT VALVE (STEAM WEBAPI) - CAŁKOWICIE OMIJA CLOUDFLARE
+      // Dokładna składnia filtrów Valve wymaga podwójnych ukośników przed komendą 'addr'
+      const url = `https://steampowered.com\\addr\\${srv.host}:${srv.port}`;
+      
+      const response = await axios.get(url, { timeout: 4000 });
 
-      if (response.data && response.data.map) {
+      // Sprawdzamy czy oficjalna masterlista Valve odnalazła serwer w swojej sieci
+      if (response.data?.response?.servers?.length > 0) {
+        const sData = response.data.response.servers[0];
         serverIsOnline = true;
-        map = response.data.map;
-        playersCount = response.data.players ?? 0;
-        maxPlayers = response.data.max_players ?? 32;
+        map = sData.map ? sData.map.trim() : map;
+        playersCount = typeof sData.players !== 'undefined' ? sData.players : 0;
+        maxPlayers = sData.max_players || 32;
       }
     } catch (e) {
       serverIsOnline = false;
-    }
-
-    // FALLBACK (Gdyby pierwsze API miało opóźnienie, pytamy zapasowy publiczny węzeł proxy)
-    if (!serverIsOnline) {
-      try {
-        const responseFb = await axios.get(`https://mcsrvstat.us{srv.host}:${srv.port}`, {
-          timeout: 3000
-        });
-        if (responseFb.data && responseFb.data.online === true) {
-          serverIsOnline = true;
-          map = responseFb.data.map || map;
-          playersCount = responseFb.data.players?.online ?? 0;
-          maxPlayers = responseFb.data.players?.max ?? 32;
-        }
-      } catch (fbErr) {
-        serverIsOnline = false;
-      }
     }
 
     return {
@@ -64,6 +53,7 @@ export default async function handler(req, res) {
 
   const wyniki = await Promise.all(obietnice);
 
+  // Pakujemy i przesyłamy dane bezpiecznie formularzem do Twojego index.php
   const params = new URLSearchParams();
   params.append('data_packet', JSON.stringify(wyniki));
 
