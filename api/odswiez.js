@@ -2,7 +2,6 @@ import axios from 'axios';
 
 const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 
-// Przypisane poprawne numery ID oraz IP odczytane bezpośrednio z Twojego phpMyAdmin
 const SERWERY_DO_SPRAWDZENIA = [
   { id: 16, type: 'cs16', host: '51.83.166.59', port: 27015 },  // Serwer Zombie EXP 100 LVL
   { id: 17, type: 'cs16', host: '54.38.131.56', port: 27015 },  // Serwer NGNW.PL [ONLY DD2]
@@ -13,42 +12,33 @@ const SERWERY_DO_SPRAWDZENIA = [
 export default async function handler(req, res) {
   const paczkaDanych = [];
 
-  // Równoległe odpytywanie stabilnego API monitorującego serwery gier
   const obietnice = SERWERY_DO_SPRAWDZENIA.map(async (srv) => {
     const typGry = srv.type;
-    
-    // Zabezpieczenie wartości na wypadek awarii (zostawiamy de_dust2 / de_mirage)
     let map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
     let playersCount = 0;
     let maxPlayers = 32;
     let serverIsOnline = false;
 
     try {
-      // Używamy otwartego i szybkiego API trackera dla rynku polskiego (xPaw i 101servers clone)
+      // Pobieranie danych przez stabilny i niezablokowany tracker HTTP TrackyServer
       const response = await axios.get(`https://trackyserver.com{srv.host}&port=${srv.port}`, { 
-        timeout: 4500 
-      }).catch(async () => {
-        // Fallback: zapasowe publiczne API, jeśli pierwsze miałoby timeout
-        return await axios.get(`https://vaughn.live{srv.host}:${srv.port}`, { timeout: 3500 });
+        timeout: 4000 
       });
 
-      const d = response.data;
-
-      // Mapujemy zróżnicowane struktury odpowiedzi JSON
-      if (d && (d.status === 'online' || d.online === true || d.map)) {
+      if (response.data && response.data.map) {
         serverIsOnline = true;
-        map = d.map || d.mapname || d.active_map || map;
-        playersCount = d.players ?? d.players_online ?? 0;
-        maxPlayers = d.max_players ?? d.players_max ?? 32;
+        map = response.data.map;
+        playersCount = response.data.players ?? 0;
+        maxPlayers = response.data.max_players ?? 32;
       }
     } catch (e) {
       serverIsOnline = false;
     }
 
     return {
-      id: srv.id,
+      id: parseInt(srv.id),
       status: serverIsOnline ? 'ONLINE' : 'OFFLINE',
-      map: map.trim(),
+      map: map.toString().trim(),
       players: parseInt(playersCount),
       max_players: parseInt(maxPlayers)
     };
@@ -56,7 +46,6 @@ export default async function handler(req, res) {
 
   const wyniki = await Promise.all(obietnice);
 
-  // Przesyłamy kompletny, pewny i nieblokowany plik strukturalny JSON na hosting SeoHost
   try {
     const response = await axios.post(bramkaUrl, wyniki, {
       headers: { 'Content-Type': 'application/json' },
