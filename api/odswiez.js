@@ -2,6 +2,7 @@ import axios from 'axios';
 
 const bramkaUrl = 'https://srv125426.seohost.com.pl/index.php';
 
+// Przypisane poprawne numery ID oraz IP odczytane bezpośrednio z Twojego phpMyAdmin
 const SERWERY_DO_SPRAWDZENIA = [
   { id: 16, type: 'cs16', host: '51.83.166.59', port: 27015 },  // Serwer Zombie EXP 100 LVL
   { id: 17, type: 'cs16', host: '54.38.131.56', port: 27015 },  // Serwer NGNW.PL [ONLY DD2]
@@ -12,6 +13,7 @@ const SERWERY_DO_SPRAWDZENIA = [
 export default async function handler(req, res) {
   const paczkaDanych = [];
 
+  // Odpytywanie wszystkich serwerów równolegle
   const obietnice = SERWERY_DO_SPRAWDZENIA.map(async (srv) => {
     const typGry = srv.type;
     let map = (typGry === 'cs2') ? 'de_mirage' : 'de_dust2';
@@ -20,16 +22,16 @@ export default async function handler(req, res) {
     let serverIsOnline = false;
 
     try {
-      // Pobieranie danych przez stabilny i niezablokowany tracker HTTP TrackyServer
-      const response = await axios.get(`https://trackyserver.com{srv.host}&port=${srv.port}`, { 
-        timeout: 4000 
+      // Pobieranie danych z darmowego i stabilnego API mcsrvstat dedykowanego serwerom Steam
+      const response = await axios.get(`https://mcsrvstat.us{srv.host}:${srv.port}`, { 
+        timeout: 4500 
       });
 
-      if (response.data && response.data.map) {
+      if (response.data && response.data.online === true) {
         serverIsOnline = true;
-        map = response.data.map;
-        playersCount = response.data.players ?? 0;
-        maxPlayers = response.data.max_players ?? 32;
+        map = response.data.map || map;
+        playersCount = response.data.players?.online ?? 0;
+        maxPlayers = response.data.players?.max ?? 32;
       }
     } catch (e) {
       serverIsOnline = false;
@@ -46,9 +48,13 @@ export default async function handler(req, res) {
 
   const wyniki = await Promise.all(obietnice);
 
+  // Pakujemy dane do bezpiecznego formatu formularza url-encoded (akceptowanego przez SeoHost)
+  const params = new URLSearchParams();
+  params.append('data_packet', JSON.stringify(wyniki));
+
   try {
-    const response = await axios.post(bramkaUrl, wyniki, {
-      headers: { 'Content-Type': 'application/json' },
+    const response = await axios.post(bramkaUrl, params, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       timeout: 6000
     });
     return res.status(200).json({ status: 'Sukces', odpowiedz_bramki: response.data });
