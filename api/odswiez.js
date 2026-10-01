@@ -183,9 +183,10 @@ export default async function handler(req, res) {
       id: srv.id,
       status: serverIsOnline ? 'ONLINE' : 'OFFLINE',
       name: '', 
-      map: map,
+      // Jeśli bot odczytał mapę z sieci - wysyła ją. Jeśli serwer milczy - wysyła null, by baza SeoHost NIE nadpisywała ręcznego wpisu użytkownika!
+      map: serverIsOnline ? map : null,
       players: playersCount,
-      max_players: 30, // Wymuszenie 30 slotów pod dynamiczny widget kołowy
+      max_players: 30,
       gracze_lista: playersList
     });
   }
